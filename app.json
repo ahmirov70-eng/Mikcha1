@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Хозмаг Учёт",
+    "slug": "hozmag-uchety",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#059669"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Приложению нужен доступ к камере для сканирования штрих-кодов товаров."
+      }
+    },
+    "android": {
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Разрешите доступ к камере для считывания штрих-кодов товаров."
+        }
+      ]
+    ],
+    "scheme": "hozmag"
+  }
+}
