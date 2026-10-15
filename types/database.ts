@@ -10,8 +10,26 @@ export interface Product {
   barcode: string;
   category: string;
   unit: string;
+  image_url?: string;   // URL фото товара из каталога
+  brand?: string;
   created_at?: string;
 }
+
+export interface ProductCatalogEntry {
+  barcode: string;
+  name: string;
+  brand?: string;
+  category: string;
+  unit: string;
+  image_url?: string;
+  country?: string;
+  description?: string;
+  source?: string;      // 'openfoodfacts' | 'upcitemdb' | 'local' | 'manual'
+  verified?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 
 export interface ReceiptItem {
   id: string;

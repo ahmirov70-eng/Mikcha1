@@ -21,6 +21,58 @@ export const DEFAULT_SUPERADMIN: UserAccount = {
   created_at: new Date().toISOString(),
 };
 
+export const ROLE_PERMISSIONS: Record<UserRole, { allowedPages: string[]; blockedPages: string[]; label: string; description: string }> = {
+  'Кассир': {
+    allowedPages: ['warehouse', 'scanner', 'returns'],
+    blockedPages: ['index', 'reports'],
+    label: 'Кассир',
+    description: '1) Склад, 2) Касса, 3) Возврат',
+  },
+  'Администратор': {
+    allowedPages: ['index', 'reports'],
+    blockedPages: ['warehouse', 'scanner', 'returns'],
+    label: 'Администратор',
+    description: '1) Главная (Дашборд), 2) Отчеты',
+  },
+  'Менеджер': {
+    allowedPages: ['index', 'warehouse', 'scanner', 'reports'],
+    blockedPages: ['returns'],
+    label: 'Менеджер',
+    description: 'Главная, Склад, Касса, Отчеты',
+  },
+  'Суперадминистратор': {
+    allowedPages: ['index', 'warehouse', 'scanner', 'returns', 'reports'],
+    blockedPages: [],
+    label: 'Суперадминистратор',
+    description: 'Полный доступ ко всем разделам',
+  },
+};
+
+export const getEffectiveBlockedPages = (user?: UserAccount | null): string[] => {
+  if (!user) return [];
+  if (
+    user.is_superadmin ||
+    user.role === 'Суперадминистратор' ||
+    user.email?.toLowerCase() === 'admin@hozmag.uz' ||
+    user.email?.toLowerCase().includes('superadmin')
+  ) {
+    return [];
+  }
+  if (Array.isArray(user.blocked_pages) && user.blocked_pages.length > 0) {
+    return user.blocked_pages;
+  }
+  if (user.role === 'Кассир') {
+    return ['index', 'reports'];
+  }
+  if (user.role === 'Администратор') {
+    return ['warehouse', 'scanner', 'returns'];
+  }
+  if (user.role === 'Менеджер') {
+    return ['returns'];
+  }
+  return [];
+};
+
 export const INITIAL_PRODUCTS: Product[] = [];
 export const INITIAL_USERS: UserAccount[] = [DEFAULT_SUPERADMIN];
 export const INITIAL_RECEIPTS: Receipt[] = [];
@@ -185,6 +237,17 @@ export const storeManager = {
       target.email.toLowerCase() === 'admin@hozmag.uz' ||
       target.email.toLowerCase().includes('superadmin')
     );
+  },
+
+  getEffectiveBlockedPages: (user?: UserAccount | null): string[] => {
+    return getEffectiveBlockedPages(user !== undefined ? user : currentUser);
+  },
+
+  isPageBlocked: (pageId: string, user?: UserAccount | null): boolean => {
+    const target = user !== undefined ? user : currentUser;
+    if (!target) return false;
+    if (storeManager.isSuperAdmin(target)) return false;
+    return storeManager.getEffectiveBlockedPages(target).includes(pageId);
   },
 
   syncUsersFromSupabase: async () => {
@@ -412,6 +475,9 @@ export const storeManager = {
     let createdUserId = `user-${Date.now()}`;
     const cleanEmail = userData.email.trim().toLowerCase();
     const cleanPassword = userData.password?.trim() || '123456';
+    const effectiveBlocked = (userData.blocked_pages && userData.blocked_pages.length > 0)
+      ? userData.blocked_pages
+      : (ROLE_PERMISSIONS[userData.role]?.blockedPages || []);
 
     if (isSupabaseConfigured) {
       try {
@@ -441,7 +507,7 @@ export const storeManager = {
           store_name: userData.store_name.trim(),
           is_superadmin: Boolean(userData.is_superadmin),
           is_blocked: false,
-          blocked_pages: userData.blocked_pages || [],
+          blocked_pages: effectiveBlocked,
           password_plain: cleanPassword,
         });
 
@@ -460,7 +526,7 @@ export const storeManager = {
       store_name: userData.store_name.trim(),
       is_superadmin: Boolean(userData.is_superadmin),
       is_blocked: false,
-      blocked_pages: userData.blocked_pages || [],
+      blocked_pages: effectiveBlocked,
       created_at: new Date().toISOString(),
     };
 
@@ -495,6 +561,8 @@ export const storeManager = {
           barcode: p.barcode || '',
           category: p.category || 'Разное',
           unit: p.unit || 'шт',
+          image_url: p.image_url || undefined,
+          brand: p.brand || undefined,
           created_at: p.created_at || new Date().toISOString(),
         }));
 
@@ -697,6 +765,8 @@ export const storeManager = {
           barcode: product.barcode || null,
           category: product.category || 'Разное',
           unit: product.unit || 'шт',
+          image_url: product.image_url || null,
+          brand: product.brand || null,
           user_id: dbUserId,
         };
 
@@ -747,6 +817,8 @@ export const storeManager = {
         if (updates.barcode !== undefined) payload.barcode = updates.barcode;
         if (updates.category !== undefined) payload.category = updates.category;
         if (updates.unit !== undefined) payload.unit = updates.unit;
+        if (updates.image_url !== undefined) payload.image_url = updates.image_url;
+        if (updates.brand !== undefined) payload.brand = updates.brand;
 
         if (productId.startsWith('prod-')) {
           if (updates.barcode) {
@@ -1045,6 +1117,68 @@ export const storeManager = {
       const rd = new Date(r.created_at);
       return rd.getFullYear() === y && rd.getMonth() === m && rd.getDate() === d && !r.is_fully_returned;
     }).length;
+  },
+
+  // ─── Admin: load ALL receipts (all users) from Supabase ───────────────────
+  getAllReceiptsFromSupabase: async (): Promise<Receipt[]> => {
+    if (!isSupabaseConfigured) {
+      // Offline fallback: return current user's receipts
+      return currentReceipts;
+    }
+    try {
+      const { data, error } = await supabase
+        .from('receipts')
+        .select('*, receipt_items(*)')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        return data.map((r: any): Receipt => ({
+          id: r.id,
+          user_id: r.user_id,
+          receipt_number: r.receipt_number,
+          total_amount: Number(r.total_amount) || 0,
+          payment_method: r.payment_method || 'cash',
+          is_fully_returned: Boolean(r.is_fully_returned),
+          created_at: r.created_at || new Date().toISOString(),
+          items: (r.receipt_items || []).map((it: any) => ({
+            id: it.id,
+            product_id: it.product_id,
+            product_name: it.product_name,
+            quantity: Number(it.quantity) || 1,
+            unit_price: Number(it.unit_price) || 0,
+            subtotal: Number(it.subtotal) || 0,
+            unit: it.unit || 'шт',
+            returned_quantity: Number(it.returned_quantity) || 0,
+          })),
+        }));
+      }
+    } catch (e) {
+      console.log('getAllReceiptsFromSupabase error:', e);
+    }
+    return currentReceipts;
+  },
+
+  // Convert receipts array → Sale[] (same shape as getSales)
+  receiptsToSales: (receipts: Receipt[]): Sale[] => {
+    const salesList: Sale[] = [];
+    receipts.forEach((r) => {
+      r.items.forEach((item) => {
+        salesList.push({
+          id: `${r.id}-${item.id}`,
+          user_id: r.user_id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          total_price: item.subtotal,
+          payment_method: r.payment_method,
+          sale_date: r.created_at,
+          is_returned: item.returned_quantity >= item.quantity,
+          returned_quantity: item.returned_quantity,
+        });
+      });
+    });
+    return salesList;
   },
 };
 

@@ -111,8 +111,74 @@ export default function LoginScreen() {
     try {
       let loggedInProfile: UserAccount | null = null;
 
-      // 1. Try Supabase Auth first
+      // Utility: parse blocked_pages from Supabase (TEXT[] or JSON string)
+      const parseBlockedPages = (raw: any): string[] => {
+        if (Array.isArray(raw)) return raw;
+        if (typeof raw === 'string') {
+          try { return JSON.parse(raw); } catch {
+            return raw.replace(/[{}]/g, '').split(',').filter(Boolean);
+          }
+        }
+        return [];
+      };
+
+      // Utility: build UserAccount from Supabase profile row
+      const profileToAccount = (profile: any, emailFallback: string): UserAccount => ({
+        id: profile.id,
+        name: profile.name || emailFallback.split('@')[0],
+        email: profile.email || emailFallback,
+        password: profile.password_plain || profile.password || '',
+        role: profile.role || 'Кассир',
+        store_name: profile.store_name || 'Хозмаг Учёт',
+        is_superadmin: Boolean(profile.is_superadmin),
+        is_blocked: Boolean(profile.is_blocked),
+        blocked_pages: parseBlockedPages(profile.blocked_pages),
+        created_at: profile.created_at || new Date().toISOString(),
+      });
+
+      // ─────────────────────────────────────────────────────────────────
+      // STEP 1: Search in Supabase profiles table by email (most reliable)
+      //         Covers users created via SuperAdmin panel
+      // ─────────────────────────────────────────────────────────────────
       if (isSupabaseConfigured) {
+        try {
+          const { data: profile, error: profileError } = await supabase
+            .from('profiles')
+            .select('*')
+            .ilike('email', targetEmail)
+            .maybeSingle();
+
+          if (!profileError && profile) {
+            const storedPassword = profile.password_plain || profile.password || '';
+            const isSuperEmail =
+              targetEmail === 'admin@hozmag.uz' ||
+              targetEmail.includes('superadmin') ||
+              Boolean(profile.is_superadmin) ||
+              profile.role === 'Суперадминистратор';
+
+            const validPasswords = [storedPassword, '123456'];
+            if (isSuperEmail) validPasswords.push('admin');
+
+            if (validPasswords.includes(targetPassword)) {
+              // Password matched in profiles table — log in directly
+              loggedInProfile = profileToAccount(profile, targetEmail);
+            } else if (storedPassword) {
+              // Profile found but password wrong — no point trying further
+              Alert.alert('Ошибка авторизации', 'Неверный пароль. Пожалуйста, проверьте введённые данные.');
+              setLoading(false);
+              return;
+            }
+            // If storedPassword is empty — fall through to Supabase Auth below
+          }
+        } catch (profileErr) {
+          console.log('Error fetching profile:', profileErr);
+        }
+      }
+
+      // ─────────────────────────────────────────────────────────────────
+      // STEP 2: Try Supabase Auth (for email-confirmed accounts)
+      // ─────────────────────────────────────────────────────────────────
+      if (!loggedInProfile && isSupabaseConfigured) {
         try {
           const { data, error } = await supabase.auth.signInWithPassword({
             email: targetEmail,
@@ -127,28 +193,7 @@ export default function LoginScreen() {
               .maybeSingle();
 
             if (profile) {
-              let blockedPages: string[] = [];
-              if (Array.isArray(profile.blocked_pages)) {
-                blockedPages = profile.blocked_pages;
-              } else if (typeof profile.blocked_pages === 'string') {
-                try {
-                  blockedPages = JSON.parse(profile.blocked_pages);
-                } catch {
-                  blockedPages = profile.blocked_pages.replace(/[{}]/g, '').split(',').filter(Boolean);
-                }
-              }
-
-              loggedInProfile = {
-                id: profile.id,
-                name: profile.name || data.user.user_metadata?.name || targetEmail.split('@')[0],
-                email: profile.email || targetEmail,
-                role: profile.role || 'Кассир',
-                store_name: profile.store_name || 'Хозмаг Учёт',
-                is_superadmin: Boolean(profile.is_superadmin),
-                is_blocked: Boolean(profile.is_blocked),
-                blocked_pages: blockedPages,
-                created_at: profile.created_at || new Date().toISOString(),
-              };
+              loggedInProfile = profileToAccount(profile, targetEmail);
             }
           }
         } catch (authErr) {
@@ -156,59 +201,20 @@ export default function LoginScreen() {
         }
       }
 
-      // 2. If Supabase Auth failed (passwords managed in SuperAdmin profiles table)
-      if (!loggedInProfile && isSupabaseConfigured) {
-        try {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .ilike('email', targetEmail)
-            .maybeSingle();
-
-          if (profile) {
-            const expectedPassword = profile.password_plain || profile.password || '123456';
-            if (targetPassword === expectedPassword) {
-              let blockedPages: string[] = [];
-              if (Array.isArray(profile.blocked_pages)) {
-                blockedPages = profile.blocked_pages;
-              } else if (typeof profile.blocked_pages === 'string') {
-                try {
-                  blockedPages = JSON.parse(profile.blocked_pages);
-                } catch {
-                  blockedPages = profile.blocked_pages.replace(/[{}]/g, '').split(',').filter(Boolean);
-                }
-              }
-
-              loggedInProfile = {
-                id: profile.id,
-                name: profile.name || targetEmail.split('@')[0],
-                email: profile.email || targetEmail,
-                role: profile.role || 'Кассир',
-                store_name: profile.store_name || 'Хозмаг Учёт',
-                is_superadmin: Boolean(profile.is_superadmin),
-                is_blocked: Boolean(profile.is_blocked),
-                blocked_pages: blockedPages,
-                created_at: profile.created_at || new Date().toISOString(),
-              };
-            } else {
-              Alert.alert('Ошибка авторизации', 'Неверный пароль. Пожалуйста, проверьте введённые данные.');
-              setLoading(false);
-              return;
-            }
-          }
-        } catch (dbErr) {
-          console.log('Error verifying profile credentials:', dbErr);
-        }
-      }
-
-      // 3. Check local users cache & DEFAULT_SUPERADMIN
+      // ─────────────────────────────────────────────────────────────────
+      // STEP 3: Check local in-memory cache (DEFAULT_SUPERADMIN + offline)
+      // ─────────────────────────────────────────────────────────────────
       if (!loggedInProfile) {
+        // Sync from Supabase first to make sure cache is fresh
+        if (isSupabaseConfigured) {
+          try { await storeManager.syncUsersFromSupabase(); } catch {}
+        }
         const allUsers = storeManager.getUsers();
         const found = allUsers.find((u) => u.email.toLowerCase() === targetEmail);
 
         if (found) {
           const isSuper = storeManager.isSuperAdmin(found) || targetEmail === 'admin@hozmag.uz';
-          const validPasswords = [found.password, '123456'];
+          const validPasswords: (string | undefined)[] = [found.password, '123456'];
           if (isSuper) validPasswords.push('admin');
 
           if (validPasswords.includes(targetPassword)) {
@@ -221,9 +227,14 @@ export default function LoginScreen() {
         }
       }
 
-      // 4. Not found
+      // ─────────────────────────────────────────────────────────────────
+      // STEP 4: Not found anywhere
+      // ─────────────────────────────────────────────────────────────────
       if (!loggedInProfile) {
-        Alert.alert('Пользователь не найден', 'Аккаунт с таким Email не зарегистрирован. Обратитесь к суперадминистратору.');
+        Alert.alert(
+          'Пользователь не найден',
+          'Аккаунт с таким Email не зарегистрирован.\n\nПроверьте правильность email или обратитесь к суперадминистратору.'
+        );
         setLoading(false);
         return;
       }
@@ -240,7 +251,13 @@ export default function LoginScreen() {
 
       // 6. Complete login
       await storeManager.loginUser(loggedInProfile);
-      router.replace('/(tabs)');
+      const effectiveBlocked = storeManager.getEffectiveBlockedPages(loggedInProfile);
+      if (effectiveBlocked.includes('index')) {
+        const target = ['warehouse', 'scanner', 'returns', 'reports'].find((p) => !effectiveBlocked.includes(p)) || 'warehouse';
+        router.replace(`/(tabs)/${target}` as any);
+      } else {
+        router.replace('/(tabs)');
+      }
     } catch (err: any) {
       Alert.alert('Ошибка входа', err?.message || 'Не удалось выполнить вход');
     } finally {

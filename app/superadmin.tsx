@@ -40,12 +40,14 @@ import {
   RefreshCw,
   Database,
   Cloud,
+  LayoutDashboard,
 } from 'lucide-react-native';
-import { storeManager } from '../lib/mockData';
+import { storeManager, ROLE_PERMISSIONS } from '../lib/mockData';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { UserAccount, UserRole } from '../types/database';
 
 const AVAILABLE_PAGES = [
+  { id: 'index', label: 'Главная', icon: LayoutDashboard, desc: 'Дашборд, показатели выручки и сводка' },
   { id: 'warehouse', label: 'Склад', icon: Package, desc: 'Управление товарами, приёмка и остатки' },
   { id: 'scanner', label: 'Касса', icon: ShoppingCart, desc: 'Сканирование товаров и оформление чеков' },
   { id: 'returns', label: 'Возвраты', icon: RotateCcw, desc: 'История чеков и возврат товаров' },
@@ -66,7 +68,7 @@ export default function SuperadminScreen() {
   const [newPassword, setNewPassword] = useState('');
   const [newStoreName, setNewStoreName] = useState('Хозмаг Учёт');
   const [newRole, setNewRole] = useState<UserRole>('Кассир');
-  const [newBlockedPages, setNewBlockedPages] = useState<string[]>([]);
+  const [newBlockedPages, setNewBlockedPages] = useState<string[]>(['index', 'reports']);
   const [isCreating, setIsCreating] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
 
@@ -143,7 +145,7 @@ export default function SuperadminScreen() {
     setEditRole(user.role);
     setEditStoreName(user.store_name || 'Хозмаг Учёт');
     setEditIsBlocked(Boolean(user.is_blocked));
-    setEditBlockedPages(user.blocked_pages || []);
+    setEditBlockedPages(storeManager.getEffectiveBlockedPages(user));
     setShowEditPassword(false);
   };
 
@@ -317,7 +319,7 @@ export default function SuperadminScreen() {
       setNewEmail('');
       setNewPassword('');
       setNewRole('Кассир');
-      setNewBlockedPages([]);
+      setNewBlockedPages(['index', 'reports']);
 
       Alert.alert(
         'Пользователь создан! 🎉',
@@ -467,7 +469,8 @@ export default function SuperadminScreen() {
           filteredUsers.map((user) => {
             const isMe = user.id === currentUser?.id;
             const isUserSuper = storeManager.isSuperAdmin(user);
-            const userBlockedPages = user.blocked_pages || [];
+            const userBlockedPages = storeManager.getEffectiveBlockedPages(user);
+            const userAllowedPages = AVAILABLE_PAGES.filter((p) => !userBlockedPages.includes(p.id));
 
             return (
               <TouchableOpacity
@@ -570,21 +573,23 @@ export default function SuperadminScreen() {
                   </View>
                 </View>
 
-                {/* Page Access Pills */}
+                {/* Page Access — показываем РАЗРЕШЁННЫЕ страницы */}
                 <View style={styles.blockedPagesSection}>
-                  <Text style={styles.blockedPagesLabel}>Доступ к страницам:</Text>
-                  {userBlockedPages.length === 0 ? (
+                  <Text style={styles.blockedPagesLabel}>Доступные разделы:</Text>
+                  {isUserSuper ? (
                     <View style={styles.allowedFullBadge}>
-                      <CheckCircle2 size={12} color="#059669" />
-                      <Text style={styles.allAccessText}>Все 4 страницы разрешены</Text>
+                      <CheckCircle2 size={12} color="#D97706" />
+                      <Text style={[styles.allAccessText, { color: '#D97706' }]}>Все разделы + SuperAdmin Портал</Text>
                     </View>
                   ) : (
-                    <View style={styles.blockedChipsRow}>
-                      {userBlockedPages.map((pageId) => {
-                        const page = AVAILABLE_PAGES.find((p) => p.id === pageId);
+                    <View style={styles.allowedPagesRow}>
+                      {userAllowedPages.map((page, idx) => {
+                        const IconComp = page.icon;
                         return (
-                          <View key={pageId} style={styles.blockedChip}>
-                            <Text style={styles.blockedChipText}>⛔ {page?.label || pageId} (Откл)</Text>
+                          <View key={page.id} style={styles.allowedPageChip}>
+                            <Text style={styles.allowedPageNum}>{idx + 1})</Text>
+                            <IconComp size={12} color="#34D399" />
+                            <Text style={styles.allowedPageLabel}>{page.label}</Text>
                           </View>
                         );
                       })}
@@ -777,11 +782,20 @@ export default function SuperadminScreen() {
                   <View>
                     <Text style={styles.inputLabel}>Роль в системе</Text>
                     <View style={styles.rolePickerRow}>
-                      {(['Кассир', 'Менеджер', 'Администратор', 'Суперадминистратор'] as UserRole[]).map((r) => (
+                      {(['Кассир', 'Администратор', 'Суперадминистратор', 'Менеджер'] as UserRole[]).map((r) => (
                         <TouchableOpacity
                           key={r}
                           style={[styles.roleChip, editRole === r && styles.roleChipActive]}
-                          onPress={() => setEditRole(r)}
+                          onPress={() => {
+                            setEditRole(r);
+                            const defaults = ROLE_PERMISSIONS[r]?.blockedPages;
+                            if (defaults) {
+                              setEditBlockedPages(defaults);
+                              if (selectedUser) {
+                                storeManager.setBlockedPages(selectedUser.id, defaults);
+                              }
+                            }
+                          }}
                         >
                           <Text style={[styles.roleChipText, editRole === r && styles.roleChipTextActive]}>
                             {r}
@@ -789,6 +803,20 @@ export default function SuperadminScreen() {
                         </TouchableOpacity>
                       ))}
                     </View>
+                    <TouchableOpacity
+                      style={styles.applyRoleDefaultsBtn}
+                      onPress={() => {
+                        const defaults = ROLE_PERMISSIONS[editRole]?.blockedPages || [];
+                        setEditBlockedPages(defaults);
+                        if (selectedUser) {
+                          storeManager.setBlockedPages(selectedUser.id, defaults);
+                        }
+                        Alert.alert('Права обновлены', `Для роли «${editRole}» установлены стандартные права доступа.`);
+                      }}
+                    >
+                      <Sparkles size={14} color="#3B82F6" />
+                      <Text style={styles.applyRoleDefaultsText}>Применить стандартные права роли «{editRole}»</Text>
+                    </TouchableOpacity>
                   </View>
 
                   {/* Store Name */}
@@ -1004,21 +1032,105 @@ export default function SuperadminScreen() {
                 </View>
               </View>
 
-              {/* Role Picker */}
+              {/* Account Type Selection (Выбор типа аккаунта) */}
               <View>
-                <Text style={styles.inputLabel}>Роль в системе</Text>
-                <View style={styles.rolePickerRow}>
-                  {(['Кассир', 'Менеджер', 'Администратор', 'Суперадминистратор'] as UserRole[]).map((r) => (
-                    <TouchableOpacity
-                      key={r}
-                      style={[styles.roleChip, newRole === r && styles.roleChipActive]}
-                      onPress={() => setNewRole(r)}
-                    >
-                      <Text style={[styles.roleChipText, newRole === r && styles.roleChipTextActive]}>
-                        {r}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
+                <Text style={styles.inputLabel}>Выбор типа аккаунта (Роль и Права) *</Text>
+                <View style={styles.accountTypeGrid}>
+                  {/* Кассир */}
+                  <TouchableOpacity
+                    style={[
+                      styles.accountTypeCard,
+                      newRole === 'Кассир' && styles.accountTypeCardActive,
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      setNewRole('Кассир');
+                      setNewBlockedPages(['index', 'reports']);
+                    }}
+                  >
+                    <View style={styles.accountTypeHeader}>
+                      <View style={[styles.accountTypeIconBg, { backgroundColor: '#ECFDF5' }]}>
+                        <ShoppingCart size={20} color="#059669" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Text style={[styles.accountTypeTitle, newRole === 'Кассир' && styles.accountTypeTitleActive]}>
+                            Кассир
+                          </Text>
+                          {newRole === 'Кассир' && <View style={styles.radioSelectedDot} />}
+                        </View>
+                        <Text style={styles.accountTypeDesc}>1) Склад • 2) Касса • 3) Возврат</Text>
+                      </View>
+                    </View>
+                    <View style={styles.accountPermList}>
+                      <Text style={styles.permAllowedItem}>✓ Доступны: Склад, Касса, Возврат</Text>
+                      <Text style={styles.permBlockedItem}>⛔ Заблокированы: Главная (Дашборд), Отчёты</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Администратор */}
+                  <TouchableOpacity
+                    style={[
+                      styles.accountTypeCard,
+                      newRole === 'Администратор' && styles.accountTypeCardActiveAdmin,
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      setNewRole('Администратор');
+                      setNewBlockedPages(['warehouse', 'scanner', 'returns']);
+                    }}
+                  >
+                    <View style={styles.accountTypeHeader}>
+                      <View style={[styles.accountTypeIconBg, { backgroundColor: '#EFF6FF' }]}>
+                        <BarChart3 size={20} color="#2563EB" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Text style={[styles.accountTypeTitle, newRole === 'Администратор' && styles.accountTypeTitleActiveAdmin]}>
+                            Администратор
+                          </Text>
+                          {newRole === 'Администратор' && <View style={[styles.radioSelectedDot, { backgroundColor: '#2563EB' }]} />}
+                        </View>
+                        <Text style={styles.accountTypeDesc}>1) Главная • 2) Отчет</Text>
+                      </View>
+                    </View>
+                    <View style={styles.accountPermList}>
+                      <Text style={styles.permAllowedItem}>✓ Доступны: Главная (Дашборд), Отчёты</Text>
+                      <Text style={styles.permBlockedItem}>⛔ Заблокированы: Склад, Касса, Возврат</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Суперадминистратор */}
+                  <TouchableOpacity
+                    style={[
+                      styles.accountTypeCard,
+                      newRole === 'Суперадминистратор' && styles.accountTypeCardActiveSuper,
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      setNewRole('Суперадминистратор');
+                      setNewBlockedPages([]);
+                    }}
+                  >
+                    <View style={styles.accountTypeHeader}>
+                      <View style={[styles.accountTypeIconBg, { backgroundColor: '#FEF3C7' }]}>
+                        <ShieldAlert size={20} color="#D97706" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Text style={[styles.accountTypeTitle, newRole === 'Суперадминистратор' && styles.accountTypeTitleActiveSuper]}>
+                            Суперадминистратор
+                          </Text>
+                          {newRole === 'Суперадминистратор' && <View style={[styles.radioSelectedDot, { backgroundColor: '#D97706' }]} />}
+                        </View>
+                        <Text style={styles.accountTypeDesc}>Владелец системы</Text>
+                      </View>
+                    </View>
+                    <View style={styles.accountPermList}>
+                      <Text style={styles.permAllowedItem}>✓ Полный доступ ко всем 5 разделам</Text>
+                      <Text style={styles.permAllowedItem}>✓ Доступ к порталу SuperAdmin</Text>
+                    </View>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1035,7 +1147,10 @@ export default function SuperadminScreen() {
 
               {/* Block Specific Pages */}
               <View>
-                <Text style={styles.inputLabel}>Отключить доступ к страницам (по желанию):</Text>
+                <Text style={styles.inputLabel}>Настройка прав доступа к страницам:</Text>
+                <Text style={styles.inputHelperText}>
+                  Страницы настроены автоматически по выбранной роли. Вы можете нажать на любую страницу для переключения:
+                </Text>
                 <View style={styles.pageToggleContainer}>
                   {AVAILABLE_PAGES.map((page) => {
                     const isBlocked = newBlockedPages.includes(page.id);
@@ -1054,7 +1169,7 @@ export default function SuperadminScreen() {
                       >
                         <IconComp size={16} color={isBlocked ? '#DC2626' : '#059669'} />
                         <Text style={[styles.pageToggleLabel, isBlocked && styles.pageToggleLabelBlocked]}>
-                          {page.label} {isBlocked ? '(Отключена)' : '(Разрешена)'}
+                          {page.label} {isBlocked ? '⛔ (Отключена)' : '✓ (Разрешена)'}
                         </Text>
                       </TouchableOpacity>
                     );
@@ -1976,5 +2091,132 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
     color: '#FFFFFF',
+  },
+  accountTypeGrid: {
+    gap: 10,
+    marginTop: 4,
+  },
+  accountTypeCard: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1.5,
+    borderColor: '#334155',
+    borderRadius: 14,
+    padding: 14,
+    gap: 8,
+  },
+  accountTypeCardActive: {
+    borderColor: '#059669',
+    backgroundColor: '#064E3B20',
+  },
+  accountTypeCardActiveAdmin: {
+    borderColor: '#2563EB',
+    backgroundColor: '#1E40AF20',
+  },
+  accountTypeCardActiveSuper: {
+    borderColor: '#D97706',
+    backgroundColor: '#78350F20',
+  },
+  accountTypeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  accountTypeIconBg: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  accountTypeTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#F8FAFC',
+  },
+  accountTypeTitleActive: {
+    color: '#34D399',
+  },
+  accountTypeTitleActiveAdmin: {
+    color: '#60A5FA',
+  },
+  accountTypeTitleActiveSuper: {
+    color: '#FBBF24',
+  },
+  accountTypeDesc: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  radioSelectedDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#059669',
+  },
+  accountPermList: {
+    gap: 4,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+  },
+  permAllowedItem: {
+    fontSize: 12,
+    color: '#34D399',
+    fontWeight: '600',
+  },
+  permBlockedItem: {
+    fontSize: 12,
+    color: '#F87171',
+    fontWeight: '500',
+  },
+  inputHelperText: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginBottom: 8,
+  },
+  applyRoleDefaultsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#3B82F6',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  applyRoleDefaultsText: {
+    fontSize: 12,
+    color: '#60A5FA',
+    fontWeight: '600',
+  },
+  allowedPagesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 2,
+  },
+  allowedPageChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#064E3B',
+    borderWidth: 1,
+    borderColor: '#065F46',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  allowedPageNum: {
+    fontSize: 11,
+    color: '#6EE7B7',
+    fontWeight: 'bold',
+  },
+  allowedPageLabel: {
+    fontSize: 11,
+    color: '#34D399',
+    fontWeight: '600',
   },
 });

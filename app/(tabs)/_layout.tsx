@@ -34,7 +34,7 @@ export default function TabsLayout() {
     return () => unsubscribe();
   }, []);
 
-  const blockedPages = currentUser?.blocked_pages || [];
+  const blockedPages = storeManager.getEffectiveBlockedPages(currentUser);
   const isBlocked = Boolean(currentUser?.is_blocked);
 
   if (isBlocked) {
@@ -79,6 +79,7 @@ export default function TabsLayout() {
         options={{
           title: 'Главная',
           headerTitle: 'Дашборд',
+          href: blockedPages.includes('index') ? null : undefined,
           tabBarIcon: ({ color, focused }) => (
             <View style={[styles.iconContainer, focused && styles.iconContainerActive]}>
               <LayoutDashboard color={color} size={22} strokeWidth={focused ? 2.2 : 1.8} />

@@ -18,10 +18,12 @@ import {
   Receipt,
   RotateCcw,
   Calendar as CalendarIcon,
+  BarChart3,
 } from 'lucide-react-native';
 import { storeManager, formatCurrency, initSupabaseRealtime } from '../../lib/mockData';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { Product, Sale } from '../../types/database';
+import { PageLockGuard } from '../../lib/PageLockGuard';
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
@@ -98,67 +100,87 @@ export default function DashboardScreen() {
   const todaySalesCount = storeManager.getTodaySalesCount();
   const lowStockProducts = products.filter((p) => p.stock_quantity <= 5);
   const growthPercentage = storeManager.getRevenueGrowthPercentage();
+  const curUser = storeManager.getCurrentUser();
+  const effectiveBlocked = storeManager.getEffectiveBlockedPages(curUser);
 
   const getDayRevenue = (day: number) => {
     return storeManager.getDayRevenue(currentYear, currentMonth, day);
   };
 
   return (
-    <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      <ScrollView contentContainerStyle={styles.contentContainer}>
-        {/* Revenue Header Banner */}
-        <View style={styles.revenueCard}>
-          <View style={styles.revenueHeader}>
-            <Text style={styles.revenueLabel}>Выручка за сегодня</Text>
-            <View style={styles.badgeLive}>
-              <View style={styles.dotLive} />
-              <Text style={styles.badgeLiveText}>{isSupabaseConfigured ? 'LIVE SUPABASE' : 'LIVE'}</Text>
+    <PageLockGuard pageId="index" pageName="Главная">
+      <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
+        <ScrollView contentContainerStyle={styles.contentContainer}>
+          {/* Revenue Header Banner */}
+          <View style={styles.revenueCard}>
+            <View style={styles.revenueHeader}>
+              <Text style={styles.revenueLabel}>Выручка за сегодня</Text>
+              <View style={styles.badgeLive}>
+                <View style={styles.dotLive} />
+                <Text style={styles.badgeLiveText}>{isSupabaseConfigured ? 'LIVE SUPABASE' : 'LIVE'}</Text>
+              </View>
+            </View>
+            <Text style={styles.revenueAmount}>{formatCurrency(todayRevenue)}</Text>
+            <View style={styles.revenueMetaRow}>
+              <View style={styles.metaBadge}>
+                <ShoppingBag size={14} color="#D1FAE5" />
+                <Text style={styles.metaText}>{todaySalesCount} чеков сегодня</Text>
+              </View>
+              <View style={styles.metaBadge}>
+                <TrendingUp size={14} color="#D1FAE5" />
+                <Text style={styles.metaText}>
+                  {growthPercentage >= 0 ? `+${growthPercentage}%` : `${growthPercentage}%`} к прошлому дню
+                </Text>
+              </View>
             </View>
           </View>
-          <Text style={styles.revenueAmount}>{formatCurrency(todayRevenue)}</Text>
-          <View style={styles.revenueMetaRow}>
-            <View style={styles.metaBadge}>
-              <ShoppingBag size={14} color="#D1FAE5" />
-              <Text style={styles.metaText}>{todaySalesCount} чеков сегодня</Text>
-            </View>
-            <View style={styles.metaBadge}>
-              <TrendingUp size={14} color="#D1FAE5" />
-              <Text style={styles.metaText}>
-                {growthPercentage >= 0 ? `+${growthPercentage}%` : `${growthPercentage}%`} к прошлому дню
-              </Text>
-            </View>
+
+          {/* Quick Action Shortcuts */}
+          <View style={styles.quickActionsRow}>
+            {!effectiveBlocked.includes('scanner') && (
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: '#059669' }]}
+                onPress={() => router.push('/scanner')}
+                activeOpacity={0.8}
+              >
+                <ScanBarcode size={20} color="#FFFFFF" />
+                <Text style={styles.actionBtnText}>Касса</Text>
+              </TouchableOpacity>
+            )}
+
+            {!effectiveBlocked.includes('warehouse') && (
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: '#2563EB' }]}
+                onPress={() => router.push('/warehouse')}
+                activeOpacity={0.8}
+              >
+                <PackagePlus size={20} color="#FFFFFF" />
+                <Text style={styles.actionBtnText}>Склад</Text>
+              </TouchableOpacity>
+            )}
+
+            {!effectiveBlocked.includes('returns') && (
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: '#D97706' }]}
+                onPress={() => router.push('/returns')}
+                activeOpacity={0.8}
+              >
+                <RotateCcw size={20} color="#FFFFFF" />
+                <Text style={styles.actionBtnText}>Возвраты</Text>
+              </TouchableOpacity>
+            )}
+
+            {!effectiveBlocked.includes('reports') && (
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: '#7C3AED' }]}
+                onPress={() => router.push('/reports')}
+                activeOpacity={0.8}
+              >
+                <BarChart3 size={20} color="#FFFFFF" />
+                <Text style={styles.actionBtnText}>Отчёты</Text>
+              </TouchableOpacity>
+            )}
           </View>
-        </View>
-
-        {/* Quick Action Shortcuts */}
-        <View style={styles.quickActionsRow}>
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#059669' }]}
-            onPress={() => router.push('/scanner')}
-            activeOpacity={0.8}
-          >
-            <ScanBarcode size={20} color="#FFFFFF" />
-            <Text style={styles.actionBtnText}>Касса</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#2563EB' }]}
-            onPress={() => router.push('/warehouse')}
-            activeOpacity={0.8}
-          >
-            <PackagePlus size={20} color="#FFFFFF" />
-            <Text style={styles.actionBtnText}>Склад</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: '#D97706' }]}
-            onPress={() => router.push('/returns')}
-            activeOpacity={0.8}
-          >
-            <RotateCcw size={20} color="#FFFFFF" />
-            <Text style={styles.actionBtnText}>Возвраты</Text>
-          </TouchableOpacity>
-        </View>
 
         {/* Low Stock Alert */}
         {lowStockProducts.length > 0 && (
@@ -314,6 +336,7 @@ export default function DashboardScreen() {
         </View>
       </ScrollView>
     </Animated.View>
+  </PageLockGuard>
   );
 }
 

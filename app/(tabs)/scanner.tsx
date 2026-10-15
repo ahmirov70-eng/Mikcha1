@@ -11,6 +11,7 @@ import {
   TextInput,
   Animated,
   Dimensions,
+  Image,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -32,6 +33,7 @@ import {
   Camera,
   Sparkles,
   Check,
+  ImageIcon,
 } from 'lucide-react-native';
 import { storeManager, CATEGORIES, formatCurrency, initSupabaseRealtime } from '../../lib/mockData';
 import { isSupabaseConfigured } from '../../lib/supabase';
@@ -173,6 +175,8 @@ export default function ScannerScreen() {
                   barcode: codeToSave,
                   category: recognized.category,
                   unit: recognized.unit,
+                  image_url: recognized.imageUrl,
+                  brand: recognized.brand,
                 });
                 addToCart(newProduct);
                 setScanToast({ name: newProduct.name, price: newProduct.price });
@@ -411,6 +415,18 @@ export default function ScannerScreen() {
 
             return (
               <View style={styles.cartItemRow}>
+                {item.product.image_url ? (
+                  <Image
+                    source={{ uri: item.product.image_url }}
+                    style={styles.cartItemThumb}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <View style={styles.cartItemThumbPlaceholder}>
+                    <Package size={18} color="#9CA3AF" />
+                  </View>
+                )}
+
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cartItemName}>{item.product.name}</Text>
                   <View style={styles.cartItemMeta}>
@@ -547,6 +563,18 @@ export default function ScannerScreen() {
                       setIsCatalogModalOpen(false);
                     }}
                   >
+                    {item.image_url ? (
+                      <Image
+                        source={{ uri: item.image_url }}
+                        style={styles.catalogItemThumb}
+                        resizeMode="contain"
+                      />
+                    ) : (
+                      <View style={styles.catalogItemThumbPlaceholder}>
+                        <Package size={18} color="#9CA3AF" />
+                      </View>
+                    )}
+
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.catalogItemName, isUnavailable && { color: '#9CA3AF' }]}>
                         {item.name}
@@ -896,6 +924,26 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F9FAFB',
   },
+  cartItemThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    marginRight: 10,
+  },
+  cartItemThumbPlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
   cartItemName: {
     fontSize: 14,
     fontWeight: 'bold',
@@ -1064,6 +1112,26 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#E5E7EB',
+  },
+  catalogItemThumb: {
+    width: 46,
+    height: 46,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    marginRight: 10,
+  },
+  catalogItemThumbPlaceholder: {
+    width: 46,
+    height: 46,
+    borderRadius: 8,
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
   },
   catalogItemDisabled: {
     opacity: 0.6,

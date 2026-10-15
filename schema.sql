@@ -185,3 +185,67 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
   END IF;
 END $$;
+
+-- ========================================================
+-- 6. Глобальный каталог товаров с фото и штрихкодами (product_catalog)
+-- ========================================================
+CREATE TABLE IF NOT EXISTS public.product_catalog (
+    barcode       VARCHAR(100) PRIMARY KEY,
+    name          VARCHAR(500) NOT NULL,
+    brand         VARCHAR(200),
+    category      VARCHAR(100) DEFAULT 'Разное',
+    unit          VARCHAR(20)  DEFAULT 'шт',
+    image_url     TEXT,
+    country       VARCHAR(100),
+    description   TEXT,
+    source        VARCHAR(50)  DEFAULT 'manual',
+    verified      BOOLEAN      DEFAULT false,
+    created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Колонки с фото в таблице продуктов
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_url TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS brand VARCHAR(200);
+
+-- Индексы каталога
+CREATE INDEX IF NOT EXISTS idx_product_catalog_barcode ON public.product_catalog(barcode);
+CREATE INDEX IF NOT EXISTS idx_product_catalog_name ON public.product_catalog(name);
+
+-- RLS для product_catalog
+ALTER TABLE public.product_catalog ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow full access on product_catalog" ON public.product_catalog;
+CREATE POLICY "Allow full access on product_catalog" ON public.product_catalog FOR ALL USING (true) WITH CHECK (true);
+
+-- Триггер: если у товара нет фото, автоматически брать из глобального каталога
+CREATE OR REPLACE FUNCTION public.sync_product_image_from_catalog()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF (NEW.image_url IS NULL OR NEW.image_url = '') AND NEW.barcode IS NOT NULL THEN
+    SELECT image_url INTO NEW.image_url
+    FROM public.product_catalog
+    WHERE barcode = NEW.barcode AND image_url IS NOT NULL
+    LIMIT 1;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS sync_product_image ON public.products;
+CREATE TRIGGER sync_product_image
+BEFORE INSERT OR UPDATE ON public.products
+FOR EACH ROW
+EXECUTE FUNCTION public.sync_product_image_from_catalog();
+
+-- Добавление product_catalog в Realtime
+ALTER TABLE public.product_catalog REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'product_catalog'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.product_catalog;
+  END IF;
+END $$;

@@ -7,14 +7,16 @@ import {
   TouchableOpacity,
   Alert,
   Animated,
+  ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import {
-  TrendingUp,
   Share2,
   PieChart,
   ArrowUpRight,
   Calendar,
+  Users,
+  User,
 } from 'lucide-react-native';
 import { storeManager, formatCurrency, initSupabaseRealtime } from '../../lib/mockData';
 import { isSupabaseConfigured } from '../../lib/supabase';
@@ -24,14 +26,40 @@ import { PageLockGuard } from '../../lib/PageLockGuard';
 export default function ReportsScreen() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [selectedFilter, setSelectedFilter] = useState<'today' | 'week' | 'all'>('today');
+  const [isAdminMode, setIsAdminMode] = useState(false);
+  const [loadingAdmin, setLoadingAdmin] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const contentFadeAnim = useRef(new Animated.Value(1)).current;
 
-  const refreshReports = useCallback(() => {
-    setSales(storeManager.getSales());
-    storeManager.syncReceiptsFromSupabase();
+  // Determine if current user is admin-level (sees all data)
+  const checkAdminMode = useCallback(() => {
+    const user = storeManager.getCurrentUser();
+    const isAdmin =
+      user?.role === 'Администратор' ||
+      user?.role === 'Суперадминистратор' ||
+      storeManager.isSuperAdmin(user ?? undefined);
+    setIsAdminMode(isAdmin);
+    return isAdmin;
   }, []);
+
+  const refreshReports = useCallback(async () => {
+    const admin = checkAdminMode();
+    if (admin) {
+      setLoadingAdmin(true);
+      try {
+        const allReceipts = await storeManager.getAllReceiptsFromSupabase();
+        setSales(storeManager.receiptsToSales(allReceipts));
+      } catch (e) {
+        setSales(storeManager.getSales());
+      } finally {
+        setLoadingAdmin(false);
+      }
+    } else {
+      setSales(storeManager.getSales());
+      storeManager.syncReceiptsFromSupabase();
+    }
+  }, [checkAdminMode]);
 
   useFocusEffect(
     useCallback(() => {
@@ -51,7 +79,7 @@ export default function ReportsScreen() {
       initSupabaseRealtime();
     }
     const unsubscribe = storeManager.subscribe(() => {
-      setSales(storeManager.getSales());
+      refreshReports();
     });
     return () => unsubscribe();
   }, [refreshReports]);
@@ -72,12 +100,8 @@ export default function ReportsScreen() {
 
   const filteredSales = sales.filter((s) => {
     const saleTime = new Date(s.sale_date).getTime();
-    if (selectedFilter === 'today') {
-      return saleTime >= startOfToday;
-    }
-    if (selectedFilter === 'week') {
-      return saleTime >= sevenDaysAgo;
-    }
+    if (selectedFilter === 'today') return saleTime >= startOfToday;
+    if (selectedFilter === 'week') return saleTime >= sevenDaysAgo;
     return true;
   });
 
@@ -96,22 +120,39 @@ export default function ReportsScreen() {
   const totalCount = activeSales.filter(s => !s.isFullyReturned).length;
   const avgCheck = totalCount > 0 ? Math.round(totalRevenue / totalCount) : 0;
 
-  const cashTotal = activeSales
-    .filter((s) => s.payment_method === 'cash')
-    .reduce((sum, s) => sum + s.effectiveAmount, 0);
+  const cashTotal = activeSales.filter((s) => s.payment_method === 'cash').reduce((sum, s) => sum + s.effectiveAmount, 0);
+  const cardTotal = activeSales.filter((s) => s.payment_method === 'card').reduce((sum, s) => sum + s.effectiveAmount, 0);
+  const transferTotal = activeSales.filter((s) => s.payment_method === 'transfer').reduce((sum, s) => sum + s.effectiveAmount, 0);
 
-  const cardTotal = activeSales
-    .filter((s) => s.payment_method === 'card')
-    .reduce((sum, s) => sum + s.effectiveAmount, 0);
-
-  const transferTotal = activeSales
-    .filter((s) => s.payment_method === 'transfer')
-    .reduce((sum, s) => sum + s.effectiveAmount, 0);
+  // Breakdown by cashier (admin mode only)
+  const cashierBreakdown = React.useMemo(() => {
+    if (!isAdminMode) return [];
+    const map = new Map<string, { userId: string; revenue: number; count: number }>();
+    activeSales.forEach((s) => {
+      if (s.isFullyReturned) return;
+      const key = s.user_id || 'unknown';
+      const existing = map.get(key) || { userId: key, revenue: 0, count: 0 };
+      existing.revenue += s.effectiveAmount;
+      existing.count += 1;
+      map.set(key, existing);
+    });
+    const users = storeManager.getUsers();
+    return Array.from(map.values())
+      .sort((a, b) => b.revenue - a.revenue)
+      .map((item) => {
+        const user = users.find((u) => u.id === item.userId);
+        return {
+          ...item,
+          name: user?.name || user?.email?.split('@')[0] || 'Кассир',
+        };
+      });
+  }, [activeSales, isAdminMode]);
 
   const handleExport = () => {
+    const adminNote = isAdminMode ? '\n📊 Режим: ВСЕ кассиры' : '';
     Alert.alert(
       'Отчёт сформирован',
-      `Итоговая выручка: ${formatCurrency(totalRevenue)}\nВсего позиций: ${totalCount}\nСредний чек: ${formatCurrency(avgCheck)}\n\nТекст отчёта готов к отправке в Telegram / WhatsApp.`,
+      `Итоговая выручка: ${formatCurrency(totalRevenue)}\nВсего позиций: ${totalCount}\nСредний чек: ${formatCurrency(avgCheck)}${adminNote}\n\nТекст отчёта готов к отправке в Telegram / WhatsApp.`,
       [{ text: 'Отлично' }]
     );
   };
@@ -119,154 +160,200 @@ export default function ReportsScreen() {
   return (
     <PageLockGuard pageId="reports" pageName="Отчёты">
       <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      <ScrollView contentContainerStyle={styles.contentContainer}>
-        {/* Time Filter Pills */}
-        <View style={styles.filterRow}>
-          <TouchableOpacity
-            style={[styles.filterChip, selectedFilter === 'today' && styles.filterChipActive]}
-            onPress={() => handleFilterChange('today')}
-            activeOpacity={0.8}
-          >
-            <Text style={[styles.filterText, selectedFilter === 'today' && styles.filterTextActive]}>
-              За Сегодня
-            </Text>
-          </TouchableOpacity>
+        <ScrollView contentContainerStyle={styles.contentContainer}>
 
-          <TouchableOpacity
-            style={[styles.filterChip, selectedFilter === 'week' && styles.filterChipActive]}
-            onPress={() => handleFilterChange('week')}
-            activeOpacity={0.8}
-          >
-            <Text style={[styles.filterText, selectedFilter === 'week' && styles.filterTextActive]}>
-              За Неделю
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.filterChip, selectedFilter === 'all' && styles.filterChipActive]}
-            onPress={() => handleFilterChange('all')}
-            activeOpacity={0.8}
-          >
-            <Text style={[styles.filterText, selectedFilter === 'all' && styles.filterTextActive]}>
-              Вся История
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <Animated.View style={{ opacity: contentFadeAnim }}>
-          {/* Main Revenue Metric Card */}
-          <View style={styles.mainStatCard}>
-            <View style={styles.statHeaderRow}>
-              <Text style={styles.statLabel}>Общая Выручка</Text>
-              <View style={styles.badgeLiveReports}>
-                <View style={styles.dotLive} />
-                <Text style={styles.badgeLiveText}>
-                  {isSupabaseConfigured ? 'LIVE SUPABASE' : 'ОФЛАЙН'}
-                </Text>
-              </View>
+          {/* Admin Mode Badge */}
+          {isAdminMode && (
+            <View style={styles.adminBadge}>
+              <Users size={14} color="#FFFFFF" />
+              <Text style={styles.adminBadgeText}>
+                Режим администратора — отчёты всех кассиров
+              </Text>
             </View>
-            <Text style={styles.statAmount}>{formatCurrency(totalRevenue)}</Text>
-            <View style={styles.statDivider} />
-            <View style={styles.subStatsRow}>
-              <View style={styles.subStatCol}>
-                <Text style={styles.subStatLabel}>Проданных товаров</Text>
-                <Text style={styles.subStatVal}>{totalCount}</Text>
-              </View>
-              <View style={styles.subStatCol}>
-                <Text style={styles.subStatLabel}>Средний чек</Text>
-                <Text style={styles.subStatVal}>{formatCurrency(avgCheck)}</Text>
-              </View>
-            </View>
+          )}
+
+          {/* Time Filter Pills */}
+          <View style={styles.filterRow}>
+            <TouchableOpacity
+              style={[styles.filterChip, selectedFilter === 'today' && styles.filterChipActive]}
+              onPress={() => handleFilterChange('today')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.filterText, selectedFilter === 'today' && styles.filterTextActive]}>
+                За Сегодня
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.filterChip, selectedFilter === 'week' && styles.filterChipActive]}
+              onPress={() => handleFilterChange('week')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.filterText, selectedFilter === 'week' && styles.filterTextActive]}>
+                За Неделю
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.filterChip, selectedFilter === 'all' && styles.filterChipActive]}
+              onPress={() => handleFilterChange('all')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.filterText, selectedFilter === 'all' && styles.filterTextActive]}>
+                Вся История
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Breakdown by Payment Methods */}
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <PieChart size={18} color="#059669" />
-              <Text style={styles.cardTitle}>Разбивка по способам оплаты</Text>
+          {loadingAdmin ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="large" color="#059669" />
+              <Text style={styles.loadingText}>Загрузка всех отчётов...</Text>
             </View>
-
-            <View style={styles.paymentMethodRow}>
-              <View style={styles.paymentMethodCard}>
-                <Text style={styles.pmLabel}>Наличные</Text>
-                <Text style={styles.pmValue}>{formatCurrency(cashTotal)}</Text>
-                <View style={[styles.pmBar, { backgroundColor: '#10B981', width: '100%' }]} />
-              </View>
-
-              <View style={styles.paymentMethodCard}>
-                <Text style={styles.pmLabel}>Карты (Humo/Uzcard)</Text>
-                <Text style={styles.pmValue}>{formatCurrency(cardTotal)}</Text>
-                <View style={[styles.pmBar, { backgroundColor: '#3B82F6', width: '100%' }]} />
-              </View>
-
-              <View style={styles.paymentMethodCard}>
-                <Text style={styles.pmLabel}>Переводы</Text>
-                <Text style={styles.pmValue}>{formatCurrency(transferTotal)}</Text>
-                <View style={[styles.pmBar, { backgroundColor: '#8B5CF6', width: '100%' }]} />
-              </View>
-            </View>
-          </View>
-
-          {/* Detailed Transaction Log */}
-          <View style={styles.card}>
-            <View style={styles.cardHeaderBetween}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Calendar size={18} color="#059669" />
-                <Text style={styles.cardTitle}>История Транзакций</Text>
-              </View>
-              <TouchableOpacity style={styles.exportBtn} onPress={handleExport}>
-                <Share2 size={14} color="#059669" />
-                <Text style={styles.exportBtnText}>Экспорт</Text>
-              </TouchableOpacity>
-            </View>
-
-            {activeSales.map((sale) => (
-              <View key={sale.id} style={styles.txRow}>
-                <View
-                  style={[
-                    styles.txIconBg,
-                    sale.isFullyReturned && { backgroundColor: '#FEE2E2' },
-                  ]}
-                >
-                  <ArrowUpRight
-                    size={18}
-                    color={sale.isFullyReturned ? '#DC2626' : '#059669'}
-                  />
-                </View>
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.txName}>{sale.product_name}</Text>
-                  <Text style={styles.txDate}>
-                    {new Date(sale.sale_date).toLocaleTimeString('ru-RU', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}{' '}
-                    • {sale.quantity} шт •{' '}
-                    {sale.payment_method === 'cash'
-                      ? 'Наличные'
-                      : sale.payment_method === 'card'
-                      ? 'Карта'
-                      : 'Перевод'}
+          ) : (
+            <Animated.View style={{ opacity: contentFadeAnim }}>
+              {/* Main Revenue Metric Card */}
+              <View style={styles.mainStatCard}>
+                <View style={styles.statHeaderRow}>
+                  <Text style={styles.statLabel}>
+                    {isAdminMode ? 'Общая Выручка (все кассиры)' : 'Общая Выручка'}
                   </Text>
+                  <View style={styles.badgeLiveReports}>
+                    <View style={styles.dotLive} />
+                    <Text style={styles.badgeLiveText}>
+                      {isSupabaseConfigured ? 'LIVE SUPABASE' : 'ОФЛАЙН'}
+                    </Text>
+                  </View>
                 </View>
-                <Text
-                  style={[
-                    styles.txPrice,
-                    sale.isFullyReturned && {
-                      color: '#DC2626',
-                      textDecorationLine: 'line-through',
-                    },
-                  ]}
-                >
-                  {sale.isFullyReturned
-                    ? 'Возвращён'
-                    : `+${formatCurrency(sale.effectiveAmount)}`}
-                </Text>
+                <Text style={styles.statAmount}>{formatCurrency(totalRevenue)}</Text>
+                <View style={styles.statDivider} />
+                <View style={styles.subStatsRow}>
+                  <View style={styles.subStatCol}>
+                    <Text style={styles.subStatLabel}>Проданных товаров</Text>
+                    <Text style={styles.subStatVal}>{totalCount}</Text>
+                  </View>
+                  <View style={styles.subStatCol}>
+                    <Text style={styles.subStatLabel}>Средний чек</Text>
+                    <Text style={styles.subStatVal}>{formatCurrency(avgCheck)}</Text>
+                  </View>
+                </View>
               </View>
-            ))}
-          </View>
-        </Animated.View>
-      </ScrollView>
-    </Animated.View>
+
+              {/* Cashier Breakdown (admin only) */}
+              {isAdminMode && cashierBreakdown.length > 0 && (
+                <View style={styles.card}>
+                  <View style={styles.cardHeader}>
+                    <Users size={18} color="#059669" />
+                    <Text style={styles.cardTitle}>Выручка по кассирам</Text>
+                  </View>
+                  {cashierBreakdown.map((cashier) => (
+                    <View key={cashier.userId} style={styles.cashierRow}>
+                      <View style={styles.cashierIconBg}>
+                        <User size={14} color="#059669" />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text style={styles.cashierName}>{cashier.name}</Text>
+                        <Text style={styles.cashierSub}>{cashier.count} продаж</Text>
+                      </View>
+                      <Text style={styles.cashierRevenue}>{formatCurrency(cashier.revenue)}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {/* Breakdown by Payment Methods */}
+              <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <PieChart size={18} color="#059669" />
+                  <Text style={styles.cardTitle}>Разбивка по способам оплаты</Text>
+                </View>
+
+                <View style={styles.paymentMethodRow}>
+                  <View style={styles.paymentMethodCard}>
+                    <Text style={styles.pmLabel}>Наличные</Text>
+                    <Text style={styles.pmValue}>{formatCurrency(cashTotal)}</Text>
+                    <View style={[styles.pmBar, { backgroundColor: '#10B981', width: '100%' }]} />
+                  </View>
+
+                  <View style={styles.paymentMethodCard}>
+                    <Text style={styles.pmLabel}>Карты (Humo/Uzcard)</Text>
+                    <Text style={styles.pmValue}>{formatCurrency(cardTotal)}</Text>
+                    <View style={[styles.pmBar, { backgroundColor: '#3B82F6', width: '100%' }]} />
+                  </View>
+
+                  <View style={styles.paymentMethodCard}>
+                    <Text style={styles.pmLabel}>Переводы</Text>
+                    <Text style={styles.pmValue}>{formatCurrency(transferTotal)}</Text>
+                    <View style={[styles.pmBar, { backgroundColor: '#8B5CF6', width: '100%' }]} />
+                  </View>
+                </View>
+              </View>
+
+              {/* Detailed Transaction Log */}
+              <View style={styles.card}>
+                <View style={styles.cardHeaderBetween}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Calendar size={18} color="#059669" />
+                    <Text style={styles.cardTitle}>История Транзакций</Text>
+                  </View>
+                  <TouchableOpacity style={styles.exportBtn} onPress={handleExport}>
+                    <Share2 size={14} color="#059669" />
+                    <Text style={styles.exportBtnText}>Экспорт</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {activeSales.length === 0 && (
+                  <Text style={styles.emptyTx}>Нет транзакций за выбранный период</Text>
+                )}
+
+                {activeSales.map((sale) => (
+                  <View key={sale.id} style={styles.txRow}>
+                    <View
+                      style={[
+                        styles.txIconBg,
+                        sale.isFullyReturned && { backgroundColor: '#FEE2E2' },
+                      ]}
+                    >
+                      <ArrowUpRight
+                        size={18}
+                        color={sale.isFullyReturned ? '#DC2626' : '#059669'}
+                      />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 12 }}>
+                      <Text style={styles.txName}>{sale.product_name}</Text>
+                      <Text style={styles.txDate}>
+                        {new Date(sale.sale_date).toLocaleTimeString('ru-RU', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}{' '}
+                        • {sale.quantity} шт •{' '}
+                        {sale.payment_method === 'cash'
+                          ? 'Наличные'
+                          : sale.payment_method === 'card'
+                          ? 'Карта'
+                          : 'Перевод'}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.txPrice,
+                        sale.isFullyReturned && {
+                          color: '#DC2626',
+                          textDecorationLine: 'line-through',
+                        },
+                      ]}
+                    >
+                      {sale.isFullyReturned
+                        ? 'Возвращён'
+                        : `+${formatCurrency(sale.effectiveAmount)}`}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </Animated.View>
+          )}
+        </ScrollView>
+      </Animated.View>
     </PageLockGuard>
   );
 }
@@ -278,6 +365,31 @@ const styles = StyleSheet.create({
   },
   contentContainer: {
     padding: 16,
+  },
+  adminBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#1D4ED8',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 14,
+  },
+  adminBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    flex: 1,
+  },
+  loadingBox: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    gap: 14,
+  },
+  loadingText: {
+    color: '#6B7280',
+    fontSize: 14,
   },
   filterRow: {
     flexDirection: 'row',
@@ -370,6 +482,36 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#111827',
   },
+  cashierRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  cashierIconBg: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#ECFDF5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cashierName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1F2937',
+  },
+  cashierSub: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 1,
+  },
+  cashierRevenue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#059669',
+  },
   paymentMethodRow: {
     gap: 10,
   },
@@ -410,6 +552,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#047857',
     fontWeight: 'bold',
+  },
+  emptyTx: {
+    textAlign: 'center',
+    color: '#9CA3AF',
+    fontSize: 14,
+    paddingVertical: 20,
   },
   txRow: {
     flexDirection: 'row',

@@ -11,6 +11,7 @@ import {
   ScrollView,
   ActivityIndicator,
   RefreshControl,
+  Image,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -24,12 +25,13 @@ import {
   Tag,
   DollarSign,
   Sparkles,
+  ImageIcon,
 } from 'lucide-react-native';
 import { storeManager, CATEGORIES, UNITS, formatCurrency, initSupabaseRealtime } from '../../lib/mockData';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { Product } from '../../types/database';
 import { playScanBeepSound } from '../../lib/sound';
-import { lookupProductByBarcode, extractGtinFromDataMatrix } from '../../lib/barcodeLookup';
+import { lookupProductByBarcode, extractGtinFromDataMatrix, saveToCatalog, searchProductImageOnline } from '../../lib/barcodeLookup';
 import { PageLockGuard } from '../../lib/PageLockGuard';
 
 export default function WarehouseScreen() {
@@ -63,6 +65,8 @@ export default function WarehouseScreen() {
   const [scanStock, setScanStock] = useState('1');
   const [scanCategory, setScanCategory] = useState('Инструменты');
   const [scanUnit, setScanUnit] = useState('шт');
+  const [scanImageUrl, setScanImageUrl] = useState<string | undefined>(undefined);
+  const [scanSource, setScanSource] = useState<string>('');
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [isFoundOnline, setIsFoundOnline] = useState(false);
 
@@ -116,6 +120,8 @@ export default function WarehouseScreen() {
     const targetCode = gtin || scannedCode.trim();
 
     setScannedBarcode(targetCode);
+    setScanImageUrl(undefined);
+    setScanSource('');
     setIsScanDetailModalOpen(true);
 
     const existing = storeManager.findProductByBarcode(scannedCode);
@@ -127,8 +133,26 @@ export default function WarehouseScreen() {
       setScanStock('1');
       setScanCategory(existing.category);
       setScanUnit(existing.unit);
+      setScanImageUrl(existing.image_url || undefined);
+      setScanSource('local');
       setIsLookingUp(false);
       setIsFoundOnline(true);
+
+      if (!existing.image_url) {
+        searchProductImageOnline(existing.name).then((img) => {
+          if (img) {
+            setScanImageUrl(img);
+            storeManager.updateProduct(existing.id, { image_url: img });
+            saveToCatalog(existing.barcode, {
+              name: existing.name,
+              category: existing.category,
+              unit: existing.unit,
+              image_url: img,
+              source: 'web_search',
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      }
     } else {
       setIsLookingUp(true);
       setIsFoundOnline(false);
@@ -145,6 +169,8 @@ export default function WarehouseScreen() {
         setScanPurchasePrice(recognized.purchasePrice.toString());
         setScanCategory(recognized.category || 'Разное');
         setScanUnit(recognized.unit || 'шт');
+        setScanImageUrl(recognized.imageUrl || undefined);
+        setScanSource(recognized.source || '');
         setIsFoundOnline(recognized.foundOnline);
       } catch (err) {
         setScanName(`Товар ${targetCode.slice(-4) || targetCode}`);
@@ -152,6 +178,8 @@ export default function WarehouseScreen() {
         setScanPurchasePrice('25000');
         setScanCategory('Разное');
         setScanUnit('шт');
+        setScanImageUrl(undefined);
+        setScanSource('');
         setIsFoundOnline(false);
       } finally {
         setIsLookingUp(false);
@@ -175,6 +203,18 @@ export default function WarehouseScreen() {
       return;
     }
 
+    // If user corrected the name — update catalog with corrected name
+    if (scannedBarcode && scanName.trim()) {
+      saveToCatalog(scannedBarcode, {
+        name: scanName.trim(),
+        category: scanCategory,
+        unit: scanUnit,
+        image_url: scanImageUrl,
+        source: 'manual',
+        verified: true,
+      }).catch(() => {});
+    }
+
     const existing = storeManager.findProductByBarcode(scannedBarcode);
     if (existing) {
       await storeManager.updateProduct(existing.id, {
@@ -185,6 +225,7 @@ export default function WarehouseScreen() {
         category: scanCategory,
         unit: scanUnit,
         barcode: scannedBarcode.trim(),
+        image_url: scanImageUrl,
       });
       Alert.alert(
         'Товар обновлен! 🎉',
@@ -199,6 +240,7 @@ export default function WarehouseScreen() {
         barcode: scannedBarcode.trim(),
         category: scanCategory,
         unit: scanUnit,
+        image_url: scanImageUrl,
       });
       Alert.alert(
         'Товар добавлен на склад! 🎉',
@@ -228,6 +270,13 @@ export default function WarehouseScreen() {
     const targetBarcode = barcode.trim() || `47800${Math.floor(10000 + Math.random() * 90000)}`;
     const existing = storeManager.findProductByBarcode(targetBarcode);
 
+    let autoImageUrl: string | undefined = existing?.image_url;
+    if (!autoImageUrl) {
+      try {
+        autoImageUrl = (await searchProductImageOnline(name.trim())) || undefined;
+      } catch {}
+    }
+
     if (existing) {
       await storeManager.updateProduct(existing.id, {
         name: name.trim(),
@@ -237,6 +286,7 @@ export default function WarehouseScreen() {
         category,
         unit,
         barcode: targetBarcode,
+        image_url: autoImageUrl,
       });
       Alert.alert(
         'Товар обновлен! 🎉',
@@ -251,7 +301,18 @@ export default function WarehouseScreen() {
         barcode: targetBarcode,
         category,
         unit,
+        image_url: autoImageUrl,
       });
+      // Save to catalog for future lookups
+      if (autoImageUrl) {
+        saveToCatalog(targetBarcode, {
+          name: name.trim(),
+          category,
+          unit,
+          image_url: autoImageUrl,
+          source: 'web_search',
+        }).catch(() => {});
+      }
       Alert.alert(
         'Товар добавлен! 🎉',
         `Товар "${name.trim()}" с ценой ${formatCurrency(numPrice)} добавлен на склад!`
@@ -368,10 +429,23 @@ export default function WarehouseScreen() {
 
           return (
             <View style={styles.productCard}>
+              {/* Product thumbnail image */}
+              {item.image_url ? (
+                <Image
+                  source={{ uri: item.image_url }}
+                  style={styles.productThumb}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={styles.productThumbPlaceholder}>
+                  <Package size={20} color="#9CA3AF" />
+                </View>
+              )}
+
               <View style={styles.productMainInfo}>
                 <Text style={styles.productName}>{item.name}</Text>
                 <Text style={styles.productCategory}>
-                  {item.category} • Штрихкод: {item.barcode}
+                  {item.category} • {item.barcode}
                 </Text>
                 <View style={styles.priceRow}>
                   <Text style={styles.productPrice}>{formatCurrency(item.price)} / {item.unit}</Text>
@@ -641,6 +715,21 @@ export default function WarehouseScreen() {
                 <Text style={styles.barcodeBannerText}>Штрих-код / QR: {scannedBarcode}</Text>
               </View>
 
+              {/* Product Image Preview */}
+              {!isLookingUp && scanImageUrl ? (
+                <View style={styles.productImageCard}>
+                  <Image
+                    source={{ uri: scanImageUrl }}
+                    style={styles.productImagePreview}
+                    resizeMode="contain"
+                  />
+                  <View style={styles.productImageBadge}>
+                    <ImageIcon size={12} color="#6B7280" />
+                    <Text style={styles.productImageBadgeText}>Фото товара найдено</Text>
+                  </View>
+                </View>
+              ) : null}
+
               {isLookingUp ? (
                 <View style={styles.autoDetectBanner}>
                   <ActivityIndicator size="small" color="#2563EB" />
@@ -649,7 +738,10 @@ export default function WarehouseScreen() {
               ) : isFoundOnline ? (
                 <View style={styles.detectedBadge}>
                   <Sparkles size={16} color="#059669" />
-                  <Text style={styles.detectedBadgeText}>Полное название товара распознано ✨</Text>
+                  <Text style={styles.detectedBadgeText}>
+                    Полное название товара распознано ✨
+                    {scanSource === 'catalog' ? ' (каталог)' : scanSource === 'local' ? ' (локальная БД)' : scanSource === 'openfoodfacts' ? ' (Open Food Facts)' : ''}
+                  </Text>
                 </View>
               ) : null}
 
@@ -824,14 +916,33 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E5E7EB',
+    gap: 10,
+  },
+  productThumb: {
+    width: 52,
+    height: 52,
+    borderRadius: 8,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    flexShrink: 0,
+  },
+  productThumbPlaceholder: {
+    width: 52,
+    height: 52,
+    borderRadius: 8,
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
   },
   productMainInfo: {
     flex: 1,
-    marginRight: 12,
   },
   productName: {
     fontSize: 15,
@@ -1175,5 +1286,29 @@ const styles = StyleSheet.create({
     color: '#059669',
     fontSize: 10,
     fontWeight: 'bold',
+  },
+  productImageCard: {
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 12,
+    marginBottom: 12,
+  },
+  productImagePreview: {
+    width: '100%',
+    height: 160,
+    borderRadius: 8,
+  },
+  productImageBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+  },
+  productImageBadgeText: {
+    fontSize: 11,
+    color: '#6B7280',
   },
 });

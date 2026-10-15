@@ -23,8 +23,14 @@ export function PageLockGuard({ pageId, pageName, children }: PageLockGuardProps
   }, []);
 
   const isSuper = storeManager.isSuperAdmin(currentUser);
-  const blockedPages = currentUser?.blocked_pages || [];
+  const blockedPages = storeManager.getEffectiveBlockedPages(currentUser);
   const isBlocked = !isSuper && blockedPages.includes(pageId);
+
+  const handleBackToAllowed = () => {
+    const candidatePages = ['warehouse', 'scanner', 'returns', 'reports', 'index'];
+    const target = candidatePages.find((p) => !blockedPages.includes(p)) || 'warehouse';
+    router.replace(`/(tabs)/${target}` as any);
+  };
 
   if (isBlocked) {
     return (
@@ -49,9 +55,9 @@ export function PageLockGuard({ pageId, pageName, children }: PageLockGuardProps
           </Text>
         </View>
 
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.replace('/(tabs)')}>
+        <TouchableOpacity style={styles.backBtn} onPress={handleBackToAllowed}>
           <ArrowLeft size={18} color="#FFFFFF" />
-          <Text style={styles.backBtnText}>Вернуться на главную</Text>
+          <Text style={styles.backBtnText}>Перейти к доступным разделам</Text>
         </TouchableOpacity>
       </View>
     );
